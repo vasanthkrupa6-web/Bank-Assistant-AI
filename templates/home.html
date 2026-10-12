@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Voice-Based Bank Form System</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; background:#f5f7fa; padding:20px; }
+        .container { max-width:1000px; margin:auto; background:white; padding:20px; border-radius:8px; box-shadow:0 0 10px #ccc; }
+        h2 { color:#0b3d91; margin:0 0 10px }
+        .row { display:flex; gap:16px; flex-wrap:wrap; }
+        .card { flex:1 1 300px; background:#eef3ff; padding:16px; border-radius:8px; }
+        .card h3 { margin-top:0 }
+        .field { margin:6px 0; }
+        button { background:#0b5ed7; color:white; border:none; padding:10px 14px; border-radius:6px; cursor:pointer; }
+        button:disabled { background:#9bb7e9; cursor:not-allowed }
+        .small { font-size:13px; color:#333; }
+        .btn-small { background:#f45b69; color:white; padding:6px 10px; border-radius:6px; margin-left:8px; }
+        .btn-row { margin-top:10px; display:flex; gap:8px; align-items:center; }
+        #status { margin-top:10px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Voice-Based Bank Form System</h2>
+    <p class="small">Click "Start Voice Assistant" and speak the form. The page will auto-refresh panels when new data is saved.</p>
+
+    <div style="margin:12px 0;">
+        <button id="startBtn" onclick="startAssistant()">🎤 Start Voice Assistant</button>
+        <button onclick="resetAll()" class="btn-small">Reset All</button>
+        <span id="status" class="small"></span>
+    </div>
+
+    <div class="row">
+        <!-- Withdrawal -->
+        <div class="card" id="withdrawal-card">
+            <h3>Withdrawal (Latest)</h3>
+            <div class="field"><b>Date:</b> <span id="w_date">{{ withdrawal.date }}</span></div>
+            <div class="field"><b>Name:</b> <span id="w_name">{{ withdrawal.name }}</span></div>
+            <div class="field"><b>Account No:</b> <span id="w_account">{{ withdrawal.account_no }}</span></div>
+            <div class="field"><b>PAN:</b> <span id="w_pan">{{ withdrawal.pan_no }}</span></div>
+            <div class="field"><b>Amount:</b> <span id="w_amount">{{ withdrawal.amount }}</span></div>
+            <div class="btn-row">
+                <a href="/download-withdrawal"><button id="w_download" {{ 'disabled' if initial_mtimes.withdrawal==0 else '' }}>⬇ Download PDF</button></a>
+                <button id="w_reset" class="btn-small" onclick="resetWithdrawal()">Reset</button>
+            </div>
+        </div>
+
+        <!-- Deposit -->
+        <div class="card" id="deposit-card">
+            <h3>Deposit (Latest)</h3>
+            <div class="field"><b>Date:</b> <span id="d_date">{{ deposit.date }}</span></div>
+            <div class="field"><b>Name:</b> <span id="d_name">{{ deposit.name }}</span></div>
+            <div class="field"><b>Account No:</b> <span id="d_account">{{ deposit.account_no }}</span></div>
+            <div class="field"><b>PAN:</b> <span id="d_pan">{{ deposit.pan_no }}</span></div>
+            <div class="field"><b>Amount:</b> <span id="d_amount">{{ deposit.amount }}</span></div>
+            <div class="field"><b>Mode:</b> <span id="d_mode">{{ deposit.mode }}</span></div>
+            <div class="btn-row">
+                <a href="/download-deposit"><button id="d_download" {{ 'disabled' if initial_mtimes.deposit==0 else '' }}>⬇ Download PDF</button></a>
+                <button id="d_reset" class="btn-small" onclick="resetDeposit()">Reset</button>
+            </div>
+        </div>
+
+        <!-- Cheque -->
+        <div class="card" id="cheque-card">
+            <h3>Cheque Book (Latest)</h3>
+            <div class="field"><b>Date:</b> <span id="c_date">{{ cheque.date }}</span></div>
+            <div class="field"><b>Name:</b> <span id="c_name">{{ cheque.name }}</span></div>
+            <div class="field"><b>Account No:</b> <span id="c_account">{{ cheque.account_no }}</span></div>
+            <div class="field"><b>PAN:</b> <span id="c_pan">{{ cheque.pan_no }}</span></div>
+            <div class="field"><b>No. of Leaves:</b> <span id="c_leaves">{{ cheque.leaves }}</span></div>
+            <div class="btn-row">
+                <a href="/download-cheque"><button id="c_download" {{ 'disabled' if initial_mtimes.cheque==0 else '' }}>⬇ Download PDF</button></a>
+                <button id="c_reset" class="btn-small" onclick="resetCheque()">Reset</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let initialMtimes = {
+    withdrawal: {{ initial_mtimes.withdrawal | float }},
+    deposit: {{ initial_mtimes.deposit | float }},
+    cheque: {{ initial_mtimes.cheque | float }}
+};
+
+let pollInterval = null;
+let pollAttempts = 0;
+const MAX_POLL = 60; // ~2 minutes of polling
+
+function startAssistant() {
+    document.getElementById("status").innerText = "🎙 Starting assistant...";
+    fetch("/start-assistant", { method: "POST" })
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === "started") {
+                document.getElementById("status").innerText = "🎤 Assistant started. Listening... (auto-refreshing when saved)";
+                startPolling();
+            } else {
+                document.getElementById("status").innerText = "❌ Error: " + (data.message || "Could not start");
+            }
+        })
+        .catch(err => {
+            document.getElementById("status").innerText = "❌ Error: " + err;
+        });
+}
+
+function startPolling() {
+    if (pollInterval) return;
+    pollAttempts = 0;
+    pollInterval = setInterval(() => {
+        pollAttempts++;
+        if (pollAttempts > MAX_POLL) {
+            stopPolling();
+            document.getElementById("status").innerText = "⏱ No update detected. Please try again.";
+            return;
+        }
+        fetch("/latest-all")
+            .then(r => r.json())
+            .then(obj => {
+                // Withdrawal
+                if (obj.withdrawal.mtime && obj.withdrawal.mtime > initialMtimes.withdrawal) {
+                    initialMtimes.withdrawal = obj.withdrawal.mtime;
+                    updateWithdrawal(obj.withdrawal.data);
+                }
+                // Deposit
+                if (obj.deposit.mtime && obj.deposit.mtime > initialMtimes.deposit) {
+                    initialMtimes.deposit = obj.deposit.mtime;
+                    updateDeposit(obj.deposit.data);
+                }
+                // Cheque
+                if (obj.cheque.mtime && obj.cheque.mtime > initialMtimes.cheque) {
+                    initialMtimes.cheque = obj.cheque.mtime;
+                    updateCheque(obj.cheque.data);
+                }
+                if ((obj.withdrawal.mtime && obj.withdrawal.mtime > 0 && obj.withdrawal.mtime === initialMtimes.withdrawal) ||
+                    (obj.deposit.mtime && obj.deposit.mtime > 0 && obj.deposit.mtime === initialMtimes.deposit) ||
+                    (obj.cheque.mtime && obj.cheque.mtime > 0 && obj.cheque.mtime === initialMtimes.cheque)) {
+                    document.getElementById("status").innerText = "✅ New data received and updated.";
+                }
+            })
+            .catch(err => {
+                console.log("Polling error", err);
+            });
+    }, 2000);
+}
+
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
+
+function updateWithdrawal(d) {
+    document.getElementById("w_date").innerText = d.date || "";
+    document.getElementById("w_name").innerText = d.name || "";
+    document.getElementById("w_account").innerText = d.account_no || "";
+    document.getElementById("w_pan").innerText = d.pan_no || "";
+    document.getElementById("w_amount").innerText = d.amount || "";
+    document.getElementById("w_download").disabled = false;
+}
+
+function updateDeposit(d) {
+    document.getElementById("d_date").innerText = d.date || "";
+    document.getElementById("d_name").innerText = d.name || "";
+    document.getElementById("d_account").innerText = d.account_no || "";
+    document.getElementById("d_pan").innerText = d.pan_no || "";
+    document.getElementById("d_amount").innerText = d.amount || "";
+    document.getElementById("d_mode").innerText = d.mode || "";
+    document.getElementById("d_download").disabled = false;
+}
+
+function updateCheque(d) {
+    document.getElementById("c_date").innerText = d.date || "";
+    document.getElementById("c_name").innerText = d.name || "";
+    document.getElementById("c_account").innerText = d.account_no || "";
+    document.getElementById("c_pan").innerText = d.pan_no || "";
+    document.getElementById("c_leaves").innerText = d.leaves || "";
+    document.getElementById("c_download").disabled = false;
+}
+
+// ---------- Reset handlers ----------
+function resetWithdrawal() {
+    if (!confirm("Reset withdrawal data? This will clear saved entries.")) return;
+    fetch("/reset-withdrawal", { method: "POST" })
+        .then(r => r.json())
+        .then(j => {
+            if (j.status === "ok") {
+                // clear UI
+                document.getElementById("w_date").innerText = "";
+                document.getElementById("w_name").innerText = "";
+                document.getElementById("w_account").innerText = "";
+                document.getElementById("w_pan").innerText = "";
+                document.getElementById("w_amount").innerText = "";
+                document.getElementById("w_download").disabled = true;
+                initialMtimes.withdrawal = 0;
+                document.getElementById("status").innerText = "Withdrawal data reset.";
+            } else {
+                document.getElementById("status").innerText = "Error resetting withdrawal: " + (j.message||"");
+            }
+        })
+        .catch(e => document.getElementById("status").innerText = "Error: " + e);
+}
+
+function resetDeposit() {
+    if (!confirm("Reset deposit data? This will clear saved entries.")) return;
+    fetch("/reset-deposit", { method: "POST" })
+        .then(r => r.json())
+        .then(j => {
+            if (j.status === "ok") {
+                document.getElementById("d_date").innerText = "";
+                document.getElementById("d_name").innerText = "";
+                document.getElementById("d_account").innerText = "";
+                document.getElementById("d_pan").innerText = "";
+                document.getElementById("d_amount").innerText = "";
+                document.getElementById("d_mode").innerText = "";
+                document.getElementById("d_download").disabled = true;
+                initialMtimes.deposit = 0;
+                document.getElementById("status").innerText = "Deposit data reset.";
+            } else {
+                document.getElementById("status").innerText = "Error resetting deposit: " + (j.message||"");
+            }
+        })
+        .catch(e => document.getElementById("status").innerText = "Error: " + e);
+}
+
+function resetCheque() {
+    if (!confirm("Reset cheque data? This will clear saved entries.")) return;
+    fetch("/reset-cheque", { method: "POST" })
+        .then(r => r.json())
+        .then(j => {
+            if (j.status === "ok") {
+                document.getElementById("c_date").innerText = "";
+                document.getElementById("c_name").innerText = "";
+                document.getElementById("c_account").innerText = "";
+                document.getElementById("c_pan").innerText = "";
+                document.getElementById("c_leaves").innerText = "";
+                document.getElementById("c_download").disabled = true;
+                initialMtimes.cheque = 0;
+                document.getElementById("status").innerText = "Cheque data reset.";
+            } else {
+                document.getElementById("status").innerText = "Error resetting cheque: " + (j.message||"");
+            }
+        })
+        .catch(e => document.getElementById("status").innerText = "Error: " + e);
+}
+
+function resetAll() {
+    if (!confirm("Reset ALL forms? This will clear all saved entries.")) return;
+    fetch("/reset-all", { method: "POST" })
+        .then(r => r.json())
+        .then(j => {
+            if (j.status === "ok") {
+                // clear all UI
+                resetWithdrawal(); // note: these also call endpoints but we already reset; it's fine to clear UI
+                resetDeposit();
+                resetCheque();
+                document.getElementById("status").innerText = "All forms reset.";
+            } else {
+                document.getElementById("status").innerText = "Error resetting all: " + (j.message||"");
+            }
+        })
+        .catch(e => document.getElementById("status").innerText = "Error: " + e);
+}
+</script>
+</body>
+</html>
